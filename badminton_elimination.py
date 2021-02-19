@@ -9,7 +9,6 @@ import networkx as nx
 import itertools
 import cvxopt
 
-
 class Division:
     '''
     The Division class represents a badminton division. This includes all the
@@ -92,6 +91,24 @@ class Division:
         '''
 
         saturated_edges = {}
+
+        G.add_node("Source")
+        G.add_node("Sink")
+        teams = self.get_team_IDs()
+        for team in teams:
+            if team is not teamID:
+                G.add_node(team)
+                capacity = self.teams[teamID].wins+self.teams[teamID].remaining-self.teams[team].win
+                G.add_edge(team, "Sink", {"capacity":capacity, "flow":0})
+
+        for i in range(len(teams)-1):
+            for j in range(i+1,len(teams)):
+                node_name = teams[i] + "_" + teams[j]
+                G.add_node(node_name)
+                G.add_edge("Source", node_name)
+                G.add_edge(node_name,teams[i],{"capacity":0, "flow":0})
+                G.add_edge(node_name,teams[j],{"capacity":0, "flow":0})
+
 
         #TODO: implement this
 
