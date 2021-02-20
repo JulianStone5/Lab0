@@ -3,11 +3,14 @@ Spring 2021 at Olin College. The code for this lab has been adapted from:
 https://github.com/ananya77041/baseball-elimination/blob/master/src/BaseballElimination.java'''
 
 import sys
-import math
-import picos as pic
+import math 
+import picos as pc
 import networkx as nx
 import itertools
 import cvxopt
+import matplotlib as plt
+from networkx.algorithms.flow import shortest_augmenting_path
+
 
 class Division:
     '''
@@ -91,26 +94,30 @@ class Division:
         '''
 
         saturated_edges = {}
+        self.G = nx.DiGraph()
+        self.G.add_node("Source")
+        self.G.add_node("Sink")
+        teamIDs = list(self.get_team_IDs())
 
-        G.add_node("Source")
-        G.add_node("Sink")
-        teams = self.get_team_IDs()
-        for team in teams:
+        #create rightmost nodes and edges (difference in wins)
+        for team in teamIDs:
             if team is not teamID:
-                G.add_node(team)
-                capacity = self.teams[teamID].wins+self.teams[teamID].remaining-self.teams[team].win
-                G.add_edge(team, "Sink", {"capacity":capacity, "flow":0})
+                self.G.add_node(team)
+                capacity = self.teams[teamID].wins+self.teams[teamID].remaining-self.teams[team].wins
+                self.G.add_edge(team, "Sink", capacity = capacity)
 
-        for i in range(len(teams)-1):
-            for j in range(i+1,len(teams)):
-                node_name = teams[i] + "_" + teams[j]
-                G.add_node(node_name)
-                G.add_edge("Source", node_name)
-                G.add_edge(node_name,teams[i],{"capacity":0, "flow":0})
-                G.add_edge(node_name,teams[j],{"capacity":0, "flow":0})
-
-
-        #TODO: implement this
+        #create leftmost and middle nodes and edges
+        for i in range(len(teamIDs)-1):
+            for j in range(i+1,len(teamIDs)):
+                if i == teamID or j == teamID:
+                    continue
+                node_name = str(teamIDs[i]) + "_" + str(teamIDs[j])
+                matchup_games = self.teams[i].get_against(j)
+                saturated_edges[node_name] = matchup_games
+                self.G.add_node(node_name)
+                self.G.add_edge("Source", node_name, capacity = matchup_games) #leftmost edge
+                self.G.add_edge(node_name,teamIDs[i], capacity = matchup_games) # middle edges, when the first team wins
+                self.G.add_edge(node_name,teamIDs[j], capacity = matchup_games) # middle edges, when the second team wins
 
         return saturated_edges
 
@@ -124,10 +131,13 @@ class Division:
         the amount of additional games they have against each other
         return: True if team is eliminated, False otherwise
         '''
-
-        #TODO: implement this
-
-        return False
+        #calculate max flow
+        max_flow, flow_dict = nx.algorithms.flow.maximum_flow(self.G,"Source", "Sink",flow_func=shortest_augmenting_path)
+        #calculate the value of the edges leaving the source
+        comparing_value = 0 
+        for matchup in saturated_edges.keys():
+            comparing_value += saturated_edges[matchup]
+        return comparing_value > max_flow
 
     def linear_programming(self, saturated_edges):
         '''Uses linear programming to determine if the team with given team ID
@@ -141,12 +151,54 @@ class Division:
         returns True if team is eliminated, False otherwise
         '''
 
-        maxflow=pic.Problem()
+        maxflow=pc.Problem()
+        c={}
+        for e in self.G.edges(data=True):
+            c[(e[0], e[1])]  = e[2]['capacity']
 
-        #TODO: implement this
-        # we recommend using the 'cvxopt' solver once you set up the problem
+        # Convert the capacities to a PICOS expression.
+        cc=pc.new_param('c',c)
 
-        return False
+        f={}
+        for e in self.G.edges():
+            f[e]=maxflow.add_variable('f[{0}]'.format(e))
+
+        # Add another variable for the total flow.
+        F=maxflow.add_variable('F')
+
+        # Enforce edge capacities.
+        maxflow.add_list_of_constraints([f[e] <= cc[e] for e in self.G.edges()])
+
+        # Enforce flow conservation.
+        maxflow.add_list_of_constraints([
+            pc.sum([f[p,i] for p in self.G.predecessors(i)])
+            == pc.sum([f[i,j] for j in self.G.successors(i)])
+            for i in self.G.nodes() if i not in ("Source","Sink")])
+
+        # Set source flow at s.
+        maxflow.add_constraint(
+            F
+            == pc.sum([f["Source",j] for j in self.G.successors("Source")]))
+
+        # Set sink flow at t.
+        maxflow.add_constraint(
+            pc.sum([f[p,"Sink"] for p in self.G.predecessors("Sink")])
+            == F)
+
+        # Enforce flow nonnegativity.
+        maxflow.add_list_of_constraints([f[e] >= 0 for e in self.G.edges()])
+
+        # Set the objective.
+        maxflow.set_objective('max', F)
+
+        # Solve the problem.
+        maxflow.solve(solver='cvxopt')
+        
+        #calculate the value of the edges leaving the source
+        comparing_value = 0 
+        for matchup in saturated_edges.keys():
+            comparing_value += saturated_edges[matchup]
+        return comparing_value > round(F)
 
 
     def checkTeam(self, team):
